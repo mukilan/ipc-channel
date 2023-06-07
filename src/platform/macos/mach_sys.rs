@@ -196,7 +196,7 @@ pub type mach_msg_ool_descriptor64_t = Struct_Unnamed4;
 #[repr(C)]
 #[derive(Copy)]
 pub struct Struct_Unnamed5 {
-    pub address: *mut ::libc::c_void,
+    pub address: [u8; 8],
     pub deallocate: u8,
     pub copy: u8,
     pub disposition: u8,

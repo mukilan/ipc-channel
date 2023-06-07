@@ -490,6 +490,7 @@ impl OsIpcSender {
         unsafe {
             let size = Message::size_of(&data, ports.len(), shared_memory_regions.len());
             let message = libc::malloc(size as size_t) as *mut Message;
+            println!("{:p}", message);
             (*message).header.msgh_bits = (MACH_MSG_TYPE_COPY_SEND as u32) |
                 MACH_MSGH_BITS_COMPLEX;
             (*message).header.msgh_size = size as u32;
@@ -501,6 +502,7 @@ impl OsIpcSender {
                 (ports.len() + shared_memory_regions.len()) as u32;
 
             let mut port_descriptor_dest = message.offset(1) as *mut mach_msg_port_descriptor_t;
+            println!("{:p}", port_descriptor_dest);
             for outgoing_port in &ports {
                 (*port_descriptor_dest).name = outgoing_port.port();
                 (*port_descriptor_dest).pad1 = 0;
@@ -516,9 +518,17 @@ impl OsIpcSender {
 
             let mut shared_memory_descriptor_dest =
                 port_descriptor_dest as *mut mach_msg_ool_descriptor_t;
+            println!("{:p}", shared_memory_descriptor_dest);
             for shared_memory_region in &shared_memory_regions {
-                (*shared_memory_descriptor_dest).address =
-                    shared_memory_region.as_ptr() as *const c_void as *mut c_void;
+                let shared_region_addr = shared_memory_region.as_ptr() as usize;
+                (*shared_memory_descriptor_dest).address[0] = (shared_region_addr & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[1] = ((shared_region_addr >> 8) & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[2] = ((shared_region_addr >> 16) & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[3] = ((shared_region_addr >> 24) & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[4] = ((shared_region_addr >> 32) & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[5] = ((shared_region_addr >> 40) & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[6] = ((shared_region_addr >> 48) & 0xFF) as u8;
+                (*shared_memory_descriptor_dest).address[7] = ((shared_region_addr >> 56) & 0xFF) as u8;
                 (*shared_memory_descriptor_dest).size = shared_memory_region.len() as u32;
                 (*shared_memory_descriptor_dest).deallocate = 1;
                 (*shared_memory_descriptor_dest).copy = MACH_MSG_VIRTUAL_COPY as u8;
@@ -535,7 +545,8 @@ impl OsIpcSender {
 
                 let data = data.inline_data();
                 let data_size = data.len();
-                let data_size_dest = is_inline_dest.offset(1) as *mut usize;
+                let data_size_dest = is_inline_dest.offset(1) as usize;
+                let data_size_dest = ((data_size_dest & !0b111) + 8) as *mut usize;
                 *data_size_dest = data_size;
 
                 let data_dest = data_size_dest.offset(1) as *mut u8;
@@ -758,8 +769,17 @@ fn select(port: mach_port_t, blocking_mode: BlockingMode)
         let mut shared_memory_descriptor = port_descriptor as *mut mach_msg_ool_descriptor_t;
         while descriptors_remaining > 0 {
             debug_assert!((*shared_memory_descriptor).type_ == MACH_MSG_OOL_DESCRIPTOR);
+            let mut shared_region_addr: usize =
+		((*shared_memory_descriptor).address[0] as usize)
+                | (((*shared_memory_descriptor).address[1]) as usize) << 8
+                | (((*shared_memory_descriptor).address[2]) as usize) << 16
+                | (((*shared_memory_descriptor).address[3]) as usize) << 24
+                | (((*shared_memory_descriptor).address[4]) as usize) << 32
+                | (((*shared_memory_descriptor).address[5]) as usize) << 40
+                | (((*shared_memory_descriptor).address[6]) as usize) << 48
+                | (((*shared_memory_descriptor).address[7]) as usize) << 56;
             shared_memory_regions.push(OsIpcSharedMemory::from_raw_parts(
-                    (*shared_memory_descriptor).address as *mut u8,
+                    shared_region_addr as *mut u8,
                     (*shared_memory_descriptor).size as usize));
             shared_memory_descriptor = shared_memory_descriptor.offset(1);
             descriptors_remaining -= 1;
@@ -768,7 +788,8 @@ fn select(port: mach_port_t, blocking_mode: BlockingMode)
         let has_inline_data_ptr = shared_memory_descriptor as *mut bool;
         let has_inline_data = *has_inline_data_ptr;
         let payload = if has_inline_data {
-            let payload_size_ptr = has_inline_data_ptr.offset(1) as *mut usize;
+            let payload_size_ptr = has_inline_data_ptr.offset(1) as usize;
+            let payload_size_ptr = ((payload_size_ptr & !0b111) + 8) as *mut usize;
             let payload_size = *payload_size_ptr;
             let max_payload_size = message as usize + ((*message).header.msgh_size as usize) -
                 (shared_memory_descriptor as usize);
@@ -949,6 +970,7 @@ impl Message {
             mem::size_of::<mach_msg_ool_descriptor_t>() * shared_memory_length +
             mem::size_of::<bool>();
 
+        size = (size & !0b111) + 8;
         if data.is_inline() {
             size += mem::size_of::<usize>() + data.inline_data().len();
         }
